@@ -1,0 +1,1078 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
+
+  <title>Household Finance Dashboard</title>
+
+  <!-- Tailwind -->
+  <script src="https://unpkg.com/@tailwindcss/browser@4"></script>
+
+  <!-- React -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
+  <!-- Babel -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      background: #f5f5f5;
+      font-family: Inter, system-ui, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div id="root"></div>
+
+  <script type="text/babel">
+
+    const { useState, useEffect, useRef } = React;
+
+    const STORAGE_KEY = "finance-dashboard-single-file";
+
+    const defaultData = {
+      household: {
+        incomes: [],
+        expenses: []
+      },
+
+      investments: [],
+
+      reminders: {
+        parents: 1200,
+        husbandParents: 1700,
+        joint: 3000
+      },
+
+      messages: [
+        {
+          role: "assistant",
+          content:
+            "Hi 👋 I'm your finance assistant. Try saying 'I received salary $8500', 'I spent $120 at Fairprice', or 'We put $20k FD at UOB at 3.2%'."
+        }
+      ]
+    };
+
+    function loadData() {
+
+      try {
+
+        const saved =
+          localStorage.getItem(STORAGE_KEY);
+
+        return saved
+          ? JSON.parse(saved)
+          : defaultData;
+
+      } catch (err) {
+
+        return defaultData;
+      }
+    }
+
+    function saveData(data) {
+
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify(data)
+      );
+    }
+
+    function currency(value = 0) {
+
+      return new Intl.NumberFormat(
+        "en-SG",
+        {
+          style: "currency",
+          currency: "SGD",
+          maximumFractionDigits: 0
+        }
+      ).format(value);
+    }
+
+    function extractAmount(text) {
+
+      const match =
+        text.match(/(\d+[.,]?\d*)/);
+
+      if (!match) return null;
+
+      return parseFloat(
+        match[1].replace(",", "")
+      );
+    }
+
+    function extractPercentage(text) {
+
+      const match =
+        text.match(/(\d+(\.\d+)?)%/);
+
+      return match
+        ? parseFloat(match[1])
+        : null;
+    }
+
+    function inferCategory(text) {
+
+      const lower =
+        text.toLowerCase();
+
+      if (
+        lower.includes("fairprice") ||
+        lower.includes("sheng siong")
+      ) {
+        return "Food";
+      }
+
+      if (
+        lower.includes("grab")
+      ) {
+        return "Transport";
+      }
+
+      if (
+        lower.includes("doctor") ||
+        lower.includes("clinic")
+      ) {
+        return "Healthcare";
+      }
+
+      return "Others";
+    }
+
+    function daysBetween(date) {
+
+      return Math.ceil(
+        (
+          new Date(date) -
+          new Date()
+        ) /
+          (1000 * 60 * 60 * 24)
+      );
+    }
+
+    function App() {
+
+      const [data, setData] =
+        useState(loadData());
+
+      const [tab, setTab] =
+        useState("dashboard");
+
+      const [input, setInput] =
+        useState("");
+
+      const [pending, setPending] =
+        useState(null);
+
+      const [listening, setListening] =
+        useState(false);
+
+      const endRef =
+        useRef(null);
+
+      useEffect(() => {
+
+        saveData(data);
+
+      }, [data]);
+
+      useEffect(() => {
+
+        if (endRef.current) {
+
+          endRef.current.scrollIntoView({
+            behavior: "smooth"
+          });
+        }
+
+      }, [data.messages]);
+
+      function addAssistantMessage(content) {
+
+        setData((prev) => ({
+          ...prev,
+
+          messages: [
+            ...prev.messages,
+            {
+              role: "assistant",
+              content
+            }
+          ]
+        }));
+      }
+
+      function processMessage(text) {
+
+        if (!text.trim()) return;
+
+        setData((prev) => ({
+          ...prev,
+
+          messages: [
+            ...prev.messages,
+            {
+              role: "user",
+              content: text
+            }
+          ]
+        }));
+
+        setInput("");
+
+        const lower =
+          text.toLowerCase();
+
+        // SALARY
+        if (
+          lower.includes("salary")
+        ) {
+
+          const amount =
+            extractAmount(text);
+
+          if (amount) {
+
+            setPending({
+              type: "salary",
+              payload: {
+                amount,
+                date:
+                  new Date().toISOString()
+              }
+            });
+
+            addAssistantMessage(
+              `I found salary income of ${currency(amount)}. Save this income?`
+            );
+
+            return;
+          }
+        }
+
+        // EXPENSE
+        if (
+          lower.includes("spent") ||
+          lower.includes("paid") ||
+          lower.includes("fairprice")
+        ) {
+
+          const amount =
+            extractAmount(text);
+
+          if (amount) {
+
+            setPending({
+              type: "expense",
+              payload: {
+                amount,
+                category:
+                  inferCategory(text),
+                merchant: text,
+                date:
+                  new Date().toISOString()
+              }
+            });
+
+            addAssistantMessage(
+              `I detected ${currency(amount)} expense under ${inferCategory(text)}. Save transaction?`
+            );
+
+            return;
+          }
+        }
+
+        // FIXED DEPOSIT
+        if (
+          lower.includes("fd")
+        ) {
+
+          const amount =
+            extractAmount(text);
+
+          const rate =
+            extractPercentage(text) || 3.0;
+
+          let bank = "Bank";
+
+          if (lower.includes("uob")) {
+            bank = "UOB";
+          }
+
+          if (lower.includes("dbs")) {
+            bank = "DBS";
+          }
+
+          if (lower.includes("ocbc")) {
+            bank = "OCBC";
+          }
+
+          const maturity =
+            new Date();
+
+          maturity.setMonth(
+            maturity.getMonth() + 6
+          );
+
+          setPending({
+            type: "investment",
+
+            payload: {
+              type:
+                "Fixed Deposit",
+
+              institution:
+                bank,
+
+              amount,
+
+              rate,
+
+              maturityDate:
+                maturity.toISOString(),
+
+              projectedReturn:
+                amount *
+                (rate / 100) *
+                0.5
+            }
+          });
+
+          addAssistantMessage(
+            `I found a ${currency(amount)} FD at ${bank} earning ${rate}% p.a. Save investment?`
+          );
+
+          return;
+        }
+
+        // CONFIRM
+        if (
+          lower.includes("yes") &&
+          pending
+        ) {
+
+          confirmPending();
+
+          return;
+        }
+
+        addAssistantMessage(
+          "I understood your message ✨ In production, Claude Sonnet would continue the conversation and ask follow-up questions automatically."
+        );
+      }
+
+      function confirmPending() {
+
+        if (!pending) return;
+
+        setData((prev) => {
+
+          const updated = {
+            ...prev
+          };
+
+          if (
+            pending.type ===
+            "salary"
+          ) {
+
+            updated.household.incomes.push({
+              ...pending.payload,
+              id: Date.now()
+            });
+          }
+
+          if (
+            pending.type ===
+            "expense"
+          ) {
+
+            updated.household.expenses.push({
+              ...pending.payload,
+              id: Date.now()
+            });
+          }
+
+          if (
+            pending.type ===
+            "investment"
+          ) {
+
+            updated.investments.push({
+              ...pending.payload,
+              id: Date.now()
+            });
+          }
+
+          updated.messages.push({
+            role: "assistant",
+            content:
+              "Done ✨ Saved successfully."
+          });
+
+          return updated;
+        });
+
+        setPending(null);
+      }
+
+      function startVoice() {
+
+        const SpeechRecognition =
+          window.SpeechRecognition ||
+          window.webkitSpeechRecognition;
+
+        if (!SpeechRecognition) {
+
+          alert(
+            "Voice recognition is not supported on this browser."
+          );
+
+          return;
+        }
+
+        const recognition =
+          new SpeechRecognition();
+
+        recognition.lang =
+          "en-SG";
+
+        recognition.onstart = () => {
+
+          setListening(true);
+        };
+
+        recognition.onend = () => {
+
+          setListening(false);
+        };
+
+        recognition.onresult = (
+          event
+        ) => {
+
+          const transcript =
+            event.results[0][0]
+              .transcript;
+
+          setInput(transcript);
+        };
+
+        recognition.start();
+      }
+
+      const income =
+        data.household.incomes.reduce(
+          (a, b) =>
+            a + b.amount,
+          0
+        );
+
+      const expenses =
+        data.household.expenses.reduce(
+          (a, b) =>
+            a + b.amount,
+          0
+        );
+
+      const cashFlow =
+        income - expenses;
+
+      return (
+        <div className="min-h-screen bg-neutral-100 flex justify-center">
+
+          <div className="w-full max-w-[430px] min-h-screen bg-gradient-to-b from-orange-50 via-white to-white relative pb-40">
+
+            {/* HEADER */}
+            <div className="px-5 pt-6 pb-4">
+
+              <div className="flex items-center justify-between">
+
+                <div>
+
+                  <div className="text-sm text-neutral-500">
+                    Household Finance
+                  </div>
+
+                  <div className="text-2xl font-bold text-neutral-800">
+                    Good afternoon ☀️
+                  </div>
+
+                </div>
+
+                <div className="bg-orange-100 text-orange-700 px-3 py-2 rounded-2xl text-sm font-semibold">
+                  Singapore
+                </div>
+
+              </div>
+
+            </div>
+
+            {/* CONTENT */}
+            <div className="px-4 space-y-4 pb-32">
+
+              {tab === "dashboard" && (
+                <>
+                  <div className="bg-gradient-to-r from-orange-400 via-pink-400 to-orange-500 rounded-[28px] p-6 text-white shadow-lg">
+
+                    <div className="text-3xl font-bold">
+                      {currency(cashFlow)}
+                    </div>
+
+                    <div className="mt-2 text-orange-50">
+                      Monthly household cash flow
+                    </div>
+
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+
+                    <div className="bg-white rounded-3xl p-5 shadow-sm">
+
+                      <div className="text-sm text-neutral-500">
+                        Income
+                      </div>
+
+                      <div className="text-xl font-bold mt-2">
+                        {currency(income)}
+                      </div>
+
+                    </div>
+
+                    <div className="bg-white rounded-3xl p-5 shadow-sm">
+
+                      <div className="text-sm text-neutral-500">
+                        Expenses
+                      </div>
+
+                      <div className="text-xl font-bold mt-2">
+                        {currency(expenses)}
+                      </div>
+
+                    </div>
+
+                  </div>
+
+                  <div className="bg-white rounded-3xl p-5 shadow-sm">
+
+                    <div className="font-semibold">
+                      Recent Activity
+                    </div>
+
+                    <div className="mt-4 space-y-3">
+
+                      {data.household.expenses
+                        .slice(-3)
+                        .reverse()
+                        .map((item, index) => (
+
+                          <div
+                            key={index}
+                            className="flex justify-between items-center bg-neutral-50 rounded-2xl p-3"
+                          >
+
+                            <div>
+
+                              <div className="font-medium">
+                                {item.category}
+                              </div>
+
+                              <div className="text-sm text-neutral-500">
+                                {item.merchant}
+                              </div>
+
+                            </div>
+
+                            <div className="font-bold">
+                              {currency(item.amount)}
+                            </div>
+
+                          </div>
+                        ))}
+
+                    </div>
+
+                  </div>
+                </>
+              )}
+
+              {tab === "investments" && (
+                <>
+                  <div className="bg-gradient-to-r from-emerald-400 to-teal-500 rounded-[28px] p-6 text-white shadow-lg">
+
+                    <div className="text-3xl font-bold">
+                      {currency(
+                        data.investments.reduce(
+                          (a, b) =>
+                            a + b.amount,
+                          0
+                        )
+                      )}
+                    </div>
+
+                    <div className="mt-2">
+                      Total investment portfolio
+                    </div>
+
+                  </div>
+
+                  <div className="space-y-3">
+
+                    {data.investments.map(
+                      (
+                        investment,
+                        index
+                      ) => (
+
+                        <div
+                          key={index}
+                          className="bg-white rounded-3xl p-5 shadow-sm"
+                        >
+
+                          <div className="flex justify-between">
+
+                            <div>
+
+                              <div className="font-bold">
+                                {investment.institution}
+                              </div>
+
+                              <div className="text-sm text-neutral-500">
+                                {investment.type}
+                              </div>
+
+                            </div>
+
+                            <div className="text-right">
+
+                              <div className="font-bold">
+                                {currency(
+                                  investment.amount
+                                )}
+                              </div>
+
+                              <div className="text-sm text-emerald-600">
+                                {investment.rate}% p.a.
+                              </div>
+
+                            </div>
+
+                          </div>
+
+                          <div className="mt-4 text-sm text-neutral-500">
+                            Projected Return:{" "}
+                            {currency(
+                              investment.projectedReturn
+                            )}
+                          </div>
+
+                          <div className="mt-1 text-sm text-neutral-500">
+                            Matures in{" "}
+                            {daysBetween(
+                              investment.maturityDate
+                            )}{" "}
+                            days
+                          </div>
+
+                        </div>
+                      )
+                    )}
+
+                  </div>
+                </>
+              )}
+
+              {tab === "spending" && (
+                <>
+                  <div className="bg-white rounded-3xl p-5 shadow-sm">
+
+                    <div className="font-semibold">
+                      Spending Categories
+                    </div>
+
+                    <div className="mt-4 space-y-3">
+
+                      {data.household.expenses.map(
+                        (
+                          expense,
+                          index
+                        ) => (
+
+                          <div
+                            key={index}
+                            className="flex justify-between items-center bg-neutral-50 rounded-2xl p-3"
+                          >
+
+                            <div>
+
+                              <div className="font-medium">
+                                {expense.category}
+                              </div>
+
+                              <div className="text-sm text-neutral-500">
+                                {expense.merchant}
+                              </div>
+
+                            </div>
+
+                            <div className="font-bold">
+                              {currency(expense.amount)}
+                            </div>
+
+                          </div>
+                        ))}
+
+                    </div>
+
+                  </div>
+                </>
+              )}
+
+              {tab === "goals" && (
+                <>
+                  <div className="bg-gradient-to-r from-purple-400 to-pink-500 rounded-[28px] p-6 text-white shadow-lg">
+
+                    <div className="text-3xl font-bold">
+                      38%
+                    </div>
+
+                    <div className="mt-2">
+                      Towards financial freedom
+                    </div>
+
+                  </div>
+
+                  <div className="bg-white rounded-3xl p-5 shadow-sm">
+
+                    <div className="font-semibold">
+                      Retirement Goal
+                    </div>
+
+                    <div className="mt-4 h-4 bg-neutral-100 rounded-full overflow-hidden">
+
+                      <div
+                        className="h-full bg-gradient-to-r from-orange-400 to-pink-400"
+                        style={{
+                          width: "38%"
+                        }}
+                      />
+
+                    </div>
+
+                    <div className="mt-3 text-sm text-neutral-500">
+                      Estimated retirement age: 40
+                    </div>
+
+                  </div>
+                </>
+              )}
+
+              {tab === "reminders" && (
+                <>
+                  <div className="space-y-3">
+
+                    <div className="bg-white rounded-3xl p-5 shadow-sm flex justify-between">
+
+                      <div>
+
+                        <div className="font-semibold">
+                          Husband's Parents
+                        </div>
+
+                        <div className="text-sm text-neutral-500">
+                          Monthly transfer
+                        </div>
+
+                      </div>
+
+                      <div className="font-bold">
+                        {currency(
+                          data.reminders.husbandParents
+                        )}
+                      </div>
+
+                    </div>
+
+                    <div className="bg-white rounded-3xl p-5 shadow-sm flex justify-between">
+
+                      <div>
+
+                        <div className="font-semibold">
+                          My Parents
+                        </div>
+
+                        <div className="text-sm text-neutral-500">
+                          Monthly transfer
+                        </div>
+
+                      </div>
+
+                      <div className="font-bold">
+                        {currency(
+                          data.reminders.parents
+                        )}
+                      </div>
+
+                    </div>
+
+                    <div className="bg-white rounded-3xl p-5 shadow-sm flex justify-between">
+
+                      <div>
+
+                        <div className="font-semibold">
+                          Joint Account
+                        </div>
+
+                        <div className="text-sm text-neutral-500">
+                          Monthly transfer
+                        </div>
+
+                      </div>
+
+                      <div className="font-bold">
+                        {currency(
+                          data.reminders.joint
+                        )}
+                      </div>
+
+                    </div>
+
+                  </div>
+                </>
+              )}
+
+            </div>
+
+            {/* CHAT */}
+            <div className="fixed bottom-16 left-0 right-0 flex justify-center">
+
+              <div className="w-full max-w-[430px] px-3">
+
+                <div className="bg-white border border-neutral-200 rounded-3xl shadow-2xl overflow-hidden">
+
+                  <div className="max-h-56 overflow-y-auto p-4 space-y-3">
+
+                    {data.messages.map(
+                      (
+                        message,
+                        index
+                      ) => (
+
+                        <div
+                          key={index}
+                          className={`flex ${
+                            message.role === "user"
+                              ? "justify-end"
+                              : "justify-start"
+                          }`}
+                        >
+
+                          <div
+                            className={`max-w-[82%] rounded-3xl px-4 py-3 text-sm leading-relaxed ${
+                              message.role === "user"
+                                ? "bg-orange-500 text-white"
+                                : "bg-neutral-100 text-neutral-800"
+                            }`}
+                          >
+                            {message.content}
+                          </div>
+
+                        </div>
+                      )
+                    )}
+
+                    <div ref={endRef}></div>
+
+                  </div>
+
+                  {pending && (
+
+                    <div className="px-4 pb-2">
+
+                      <button
+                        onClick={
+                          confirmPending
+                        }
+                        className="w-full bg-emerald-500 text-white rounded-2xl py-3 font-semibold"
+                      >
+                        Confirm & Save
+                      </button>
+
+                    </div>
+                  )}
+
+                  <div className="border-t border-neutral-100 p-3 flex items-center gap-2">
+
+                    <button
+                      onClick={startVoice}
+                      className={`w-11 h-11 rounded-2xl flex items-center justify-center ${
+                        listening
+                          ? "bg-red-500 text-white"
+                          : "bg-orange-100 text-orange-700"
+                      }`}
+                    >
+                      🎤
+                    </button>
+
+                    <label className="w-11 h-11 rounded-2xl bg-neutral-100 flex items-center justify-center cursor-pointer">
+                      📷
+
+                      <input
+                        type="file"
+                        className="hidden"
+                        accept="image/*"
+                        onChange={() =>
+                          addAssistantMessage(
+                            "Statement uploaded ✨ In production, Claude Vision would extract all transactions automatically."
+                          )
+                        }
+                      />
+                    </label>
+
+                    <input
+                      value={input}
+                      onChange={(e) =>
+                        setInput(
+                          e.target.value
+                        )
+                      }
+                      placeholder="Tell me what happened..."
+                      className="flex-1 bg-neutral-100 rounded-2xl px-4 py-3 outline-none text-sm"
+                    />
+
+                    <button
+                      onClick={() =>
+                        processMessage(input)
+                      }
+                      className="w-11 h-11 rounded-2xl bg-orange-500 text-white flex items-center justify-center"
+                    >
+                      ➤
+                    </button>
+
+                  </div>
+
+                </div>
+
+              </div>
+
+            </div>
+
+            {/* BOTTOM NAV */}
+            <div className="fixed bottom-0 left-0 right-0 flex justify-center">
+
+              <div className="w-full max-w-[430px] bg-white border-t border-neutral-200 px-2 py-2 flex justify-around">
+
+                <button
+                  onClick={() =>
+                    setTab("dashboard")
+                  }
+                  className={`flex flex-col items-center gap-1 px-3 py-2 ${
+                    tab === "dashboard"
+                      ? "text-orange-500"
+                      : "text-neutral-400"
+                  }`}
+                >
+                  <div>🏠</div>
+                  <div className="text-[11px]">
+                    Dashboard
+                  </div>
+                </button>
+
+                <button
+                  onClick={() =>
+                    setTab("investments")
+                  }
+                  className={`flex flex-col items-center gap-1 px-3 py-2 ${
+                    tab === "investments"
+                      ? "text-orange-500"
+                      : "text-neutral-400"
+                  }`}
+                >
+                  <div>💰</div>
+                  <div className="text-[11px]">
+                    Investments
+                  </div>
+                </button>
+
+                <button
+                  onClick={() =>
+                    setTab("spending")
+                  }
+                  className={`flex flex-col items-center gap-1 px-3 py-2 ${
+                    tab === "spending"
+                      ? "text-orange-500"
+                      : "text-neutral-400"
+                  }`}
+                >
+                  <div>🛒</div>
+                  <div className="text-[11px]">
+                    Spending
+                  </div>
+                </button>
+
+                <button
+                  onClick={() =>
+                    setTab("goals")
+                  }
+                  className={`flex flex-col items-center gap-1 px-3 py-2 ${
+                    tab === "goals"
+                      ? "text-orange-500"
+                      : "text-neutral-400"
+                  }`}
+                >
+                  <div>🎯</div>
+                  <div className="text-[11px]">
+                    Goals
+                  </div>
+                </button>
+
+                <button
+                  onClick={() =>
+                    setTab("reminders")
+                  }
+                  className={`flex flex-col items-center gap-1 px-3 py-2 ${
+                    tab === "reminders"
+                      ? "text-orange-500"
+                      : "text-neutral-400"
+                  }`}
+                >
+                  <div>🔔</div>
+                  <div className="text-[11px]">
+                    Reminders
+                  </div>
+                </button>
+
+              </div>
+
+            </div>
+
+          </div>
+
+        </div>
+      );
+    }
+
+    const root =
+      ReactDOM.createRoot(
+        document.getElementById("root")
+      );
+
+    root.render(<App />);
+
+  </script>
+
+</body>
+</html>
