@@ -1,0 +1,1369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
+
+  <title>Household Finance Dashboard</title>
+
+  <!-- Tailwind -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- React -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
+  <!-- Babel -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Recharts -->
+  <script src="https://unpkg.com/recharts/umd/Recharts.min.js"></script>
+
+  <!-- Lucide -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <style>
+    body {
+      margin: 0;
+      background: #f5f5f5;
+      font-family: Inter, system-ui, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    .glass {
+      backdrop-filter: blur(12px);
+    }
+  </style>
+</head>
+
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+
+    const {
+      PieChart,
+      Pie,
+      Cell,
+      Tooltip,
+      ResponsiveContainer,
+      BarChart,
+      Bar,
+      XAxis,
+      LineChart,
+      Line,
+      CartesianGrid,
+    } = Recharts;
+
+    const STORAGE_KEY = "sg-finance-dashboard-v2";
+
+    const COLORS = [
+      "#FB923C",
+      "#F472B6",
+      "#818CF8",
+      "#4ADE80",
+      "#22D3EE",
+      "#F87171",
+      "#C084FC",
+      "#FACC15",
+    ];
+
+    const defaultData = {
+      household: {
+        incomes: [],
+        expenses: [],
+      },
+
+      investments: [],
+
+      reminders: {
+        husbandParents: 1700,
+        myParents: 1200,
+        jointTransfer: 3000,
+      },
+
+      retirement: {
+        myAge: 33,
+        husbandAge: 36,
+        retirementAge: 40,
+        children: 2,
+        targetMonthlyExpense: 9000,
+        netWorth: 420000,
+      },
+
+      rates: {
+        ssb: 3.04,
+        tbill6m: 3.1,
+        tbill1y: 3.2,
+      },
+
+      messages: [
+        {
+          role: "assistant",
+          content:
+            "Hi 👋 I'm your household finance assistant. Tell me things naturally like 'I received salary $8500', 'We placed $20k FD at UOB', or upload a statement photo.",
+        },
+      ],
+    };
+
+    function getData() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+
+        return raw
+          ? JSON.parse(raw)
+          : defaultData;
+      } catch {
+        return defaultData;
+      }
+    }
+
+    function saveData(data) {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify(data)
+      );
+    }
+
+    function currency(value = 0) {
+      return new Intl.NumberFormat(
+        "en-SG",
+        {
+          style: "currency",
+          currency: "SGD",
+          maximumFractionDigits: 0,
+        }
+      ).format(value);
+    }
+
+    function extractAmount(text) {
+      const match = text.match(
+        /(\d+[.,]?\d*)/g
+      );
+
+      if (!match) return null;
+
+      return parseFloat(
+        match[0].replace(",", "")
+      );
+    }
+
+    function extractPercentage(text) {
+      const match = text.match(
+        /(\d+(\.\d+)?)%/
+      );
+
+      return match
+        ? parseFloat(match[1])
+        : null;
+    }
+
+    function inferCategory(text) {
+      text = text.toLowerCase();
+
+      if (
+        text.includes("fairprice") ||
+        text.includes("sheng siong")
+      ) {
+        return "Food";
+      }
+
+      if (
+        text.includes("grab") ||
+        text.includes("taxi")
+      ) {
+        return "Transport";
+      }
+
+      if (
+        text.includes("clinic") ||
+        text.includes("doctor")
+      ) {
+        return "Healthcare";
+      }
+
+      if (
+        text.includes("amazon") ||
+        text.includes("shopping")
+      ) {
+        return "Shopping";
+      }
+
+      return "Others";
+    }
+
+    function addMonths(date, months) {
+      const d = new Date(date);
+
+      d.setMonth(
+        d.getMonth() + months
+      );
+
+      return d.toISOString();
+    }
+
+    function daysTo(date) {
+      return Math.ceil(
+        (new Date(date) - new Date()) /
+          (1000 * 60 * 60 * 24)
+      );
+    }
+
+    function App() {
+      const [data, setData] =
+        React.useState(getData());
+
+      const [tab, setTab] =
+        React.useState("dashboard");
+
+      const [input, setInput] =
+        React.useState("");
+
+      const [pending, setPending] =
+        React.useState(null);
+
+      const [listening, setListening] =
+        React.useState(false);
+
+      const chatEndRef =
+        React.useRef(null);
+
+      React.useEffect(() => {
+        saveData(data);
+      }, [data]);
+
+      React.useEffect(() => {
+        chatEndRef.current?.scrollIntoView({
+          behavior: "smooth",
+        });
+      }, [data.messages]);
+
+      function addAssistant(content) {
+        setData((prev) => ({
+          ...prev,
+          messages: [
+            ...prev.messages,
+            {
+              role: "assistant",
+              content,
+            },
+          ],
+        }));
+      }
+
+      async function processMessage(
+        text
+      ) {
+        if (!text.trim()) return;
+
+        setData((prev) => ({
+          ...prev,
+          messages: [
+            ...prev.messages,
+            {
+              role: "user",
+              content: text,
+            },
+          ],
+        }));
+
+        setInput("");
+
+        const lower =
+          text.toLowerCase();
+
+        // SALARY
+        if (
+          lower.includes("salary")
+        ) {
+          const amount =
+            extractAmount(text);
+
+          if (amount) {
+            setPending({
+              type: "salary",
+              payload: {
+                amount,
+                date:
+                  new Date().toISOString(),
+              },
+            });
+
+            addAssistant(
+              `I found salary income of ${currency(
+                amount
+              )}. Save this to household income?`
+            );
+
+            return;
+          }
+        }
+
+        // EXPENSE
+        if (
+          lower.includes("spent") ||
+          lower.includes("paid") ||
+          lower.includes("fairprice")
+        ) {
+          const amount =
+            extractAmount(text);
+
+          if (amount) {
+            setPending({
+              type: "expense",
+              payload: {
+                amount,
+                category:
+                  inferCategory(lower),
+                merchant: text,
+                date:
+                  new Date().toISOString(),
+              },
+            });
+
+            addAssistant(
+              `I detected ${currency(
+                amount
+              )} expense under ${
+                inferCategory(lower)
+              }. Save transaction?`
+            );
+
+            return;
+          }
+        }
+
+        // FD
+        if (
+          lower.includes("fd")
+        ) {
+          const amount =
+            extractAmount(text);
+
+          const rate =
+            extractPercentage(
+              text
+            ) || 3.0;
+
+          const bank =
+            ["uob", "dbs", "ocbc", "maybank"].find(
+              (b) =>
+                lower.includes(b)
+            ) || "Bank";
+
+          if (amount) {
+            setPending({
+              type: "investment",
+              payload: {
+                type:
+                  "Fixed Deposit",
+                institution:
+                  bank.toUpperCase(),
+                amount,
+                rate,
+                startDate:
+                  new Date().toISOString(),
+                maturityDate:
+                  addMonths(
+                    new Date(),
+                    6
+                  ),
+                projectedReturn:
+                  amount *
+                  (rate / 100) *
+                  0.5,
+              },
+            });
+
+            addAssistant(
+              `I found a ${currency(
+                amount
+              )} FD at ${bank.toUpperCase()} earning ${rate}% p.a. Save investment?`
+            );
+
+            return;
+          }
+        }
+
+        // RATE UPDATE
+        if (
+          lower.includes("ssb") &&
+          lower.includes("%")
+        ) {
+          const rate =
+            extractPercentage(
+              text
+            );
+
+          if (rate) {
+            setData((prev) => ({
+              ...prev,
+              rates: {
+                ...prev.rates,
+                ssb: rate,
+              },
+            }));
+
+            addAssistant(
+              `Updated SSB rate to ${rate}% ✨`
+            );
+
+            return;
+          }
+        }
+
+        // REMINDER UPDATE
+        if (
+          lower.includes("parents") &&
+          lower.includes("$")
+        ) {
+          const amount =
+            extractAmount(text);
+
+          if (amount) {
+            setData((prev) => ({
+              ...prev,
+              reminders: {
+                ...prev.reminders,
+                myParents:
+                  amount,
+              },
+            }));
+
+            addAssistant(
+              `Updated parents transfer to ${currency(
+                amount
+              )} from next month ✨`
+            );
+
+            return;
+          }
+        }
+
+        // YES CONFIRM
+        if (
+          lower.includes("yes") &&
+          pending
+        ) {
+          confirmPending();
+          return;
+        }
+
+        // FALLBACK AI
+        addAssistant(
+          "I understood your message. In production, Claude Sonnet would continue the conversation, ask follow-up questions, and extract structured finance data automatically."
+        );
+      }
+
+      function confirmPending() {
+        if (!pending) return;
+
+        setData((prev) => {
+          const updated = {
+            ...prev,
+          };
+
+          if (
+            pending.type ===
+            "salary"
+          ) {
+            updated.household.incomes.push(
+              {
+                ...pending.payload,
+                id: Date.now(),
+              }
+            );
+          }
+
+          if (
+            pending.type ===
+            "expense"
+          ) {
+            updated.household.expenses.push(
+              {
+                ...pending.payload,
+                id: Date.now(),
+              }
+            );
+          }
+
+          if (
+            pending.type ===
+            "investment"
+          ) {
+            updated.investments.push(
+              {
+                ...pending.payload,
+                id: Date.now(),
+              }
+            );
+          }
+
+          updated.messages.push({
+            role: "assistant",
+            content:
+              "Done ✨ Saved successfully.",
+          });
+
+          return updated;
+        });
+
+        setPending(null);
+      }
+
+      function startVoice() {
+        const SpeechRecognition =
+          window.SpeechRecognition ||
+          window.webkitSpeechRecognition;
+
+        if (
+          !SpeechRecognition
+        ) {
+          alert(
+            "Speech recognition not supported."
+          );
+
+          return;
+        }
+
+        const recognition =
+          new SpeechRecognition();
+
+        recognition.lang =
+          "en-SG";
+
+        recognition.onstart =
+          () =>
+            setListening(true);
+
+        recognition.onend =
+          () =>
+            setListening(false);
+
+        recognition.onresult =
+          (event) => {
+            const transcript =
+              event.results[0][0]
+                .transcript;
+
+            setInput(
+              transcript
+            );
+          };
+
+        recognition.start();
+      }
+
+      const totalIncome =
+        data.household.incomes.reduce(
+          (a, b) =>
+            a + b.amount,
+          0
+        );
+
+      const totalExpenses =
+        data.household.expenses.reduce(
+          (a, b) =>
+            a + b.amount,
+          0
+        );
+
+      const cashFlow =
+        totalIncome -
+        totalExpenses;
+
+      const pieData =
+        Object.entries(
+          data.household.expenses.reduce(
+            (acc, item) => {
+              acc[
+                item.category
+              ] =
+                (acc[
+                  item.category
+                ] || 0) +
+                item.amount;
+
+              return acc;
+            },
+            {}
+          )
+        ).map(
+          ([name, value]) => ({
+            name,
+            value,
+          })
+        );
+
+      const targetNestEgg =
+        data.retirement
+          .targetMonthlyExpense *
+        12 *
+        25;
+
+      const progress =
+        (data.retirement
+          .netWorth /
+          targetNestEgg) *
+        100;
+
+      return (
+        <div className="min-h-screen flex justify-center bg-neutral-100">
+          <div className="w-full max-w-[430px] bg-gradient-to-b from-orange-50 via-white to-white min-h-screen pb-40 relative">
+
+            {/* HEADER */}
+            <div className="px-5 pt-6 pb-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm text-neutral-500">
+                    Household Finance
+                  </div>
+
+                  <div className="text-2xl font-bold text-neutral-800">
+                    Good afternoon ☀️
+                  </div>
+                </div>
+
+                <div className="bg-orange-100 text-orange-700 px-3 py-2 rounded-2xl text-sm font-semibold">
+                  Singapore
+                </div>
+              </div>
+            </div>
+
+            {/* CONTENT */}
+            <div className="px-4 space-y-5 pb-32">
+
+              {tab ===
+                "dashboard" && (
+                <>
+                  <HeroCard
+                    title={currency(
+                      cashFlow
+                    )}
+                    subtitle={`Monthly cash flow after expenses`}
+                  />
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <StatCard
+                      label="Income"
+                      value={currency(
+                        totalIncome
+                      )}
+                    />
+
+                    <StatCard
+                      label="Expenses"
+                      value={currency(
+                        totalExpenses
+                      )}
+                    />
+                  </div>
+
+                  <div className="bg-white rounded-3xl p-5 shadow-sm">
+                    <div className="font-semibold mb-4">
+                      Spending Breakdown
+                    </div>
+
+                    <div className="h-64">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={
+                              pieData
+                            }
+                            dataKey="value"
+                            outerRadius={
+                              90
+                            }
+                          >
+                            {pieData.map(
+                              (
+                                _,
+                                index
+                              ) => (
+                                <Cell
+                                  key={
+                                    index
+                                  }
+                                  fill={
+                                    COLORS[
+                                      index %
+                                        COLORS.length
+                                    ]
+                                  }
+                                />
+                              )
+                            )}
+                          </Pie>
+
+                          <Tooltip />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {tab ===
+                "investments" && (
+                <>
+                  <HeroCard
+                    title={currency(
+                      data.investments.reduce(
+                        (
+                          a,
+                          b
+                        ) =>
+                          a +
+                          b.amount,
+                        0
+                      )
+                    )}
+                    subtitle="Total portfolio value"
+                  />
+
+                  {data.investments.map(
+                    (
+                      inv,
+                      idx
+                    ) => (
+                      <div
+                        key={
+                          idx
+                        }
+                        className="bg-white rounded-3xl p-5 shadow-sm"
+                      >
+                        <div className="flex justify-between">
+                          <div>
+                            <div className="font-bold">
+                              {
+                                inv.institution
+                              }
+                            </div>
+
+                            <div className="text-sm text-neutral-500">
+                              {
+                                inv.type
+                              }
+                            </div>
+                          </div>
+
+                          <div className="text-right">
+                            <div className="font-bold">
+                              {currency(
+                                inv.amount
+                              )}
+                            </div>
+
+                            <div className="text-emerald-600 text-sm">
+                              {
+                                inv.rate
+                              }
+                              % p.a.
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 flex justify-between text-sm">
+                          <div>
+                            <div className="text-neutral-400">
+                              Matures
+                            </div>
+
+                            <div>
+                              {new Date(
+                                inv.maturityDate
+                              ).toLocaleDateString()}
+                            </div>
+                          </div>
+
+                          <div>
+                            <div className="text-neutral-400">
+                              Projected Return
+                            </div>
+
+                            <div>
+                              {currency(
+                                inv.projectedReturn
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {daysTo(
+                          inv.maturityDate
+                        ) <
+                          30 && (
+                          <div className="mt-4 bg-amber-100 text-amber-900 rounded-2xl p-3 text-sm">
+                            Investment matures in{" "}
+                            {daysTo(
+                              inv.maturityDate
+                            )}{" "}
+                            days — want me to suggest the best reinvestment option?
+                          </div>
+                        )}
+                      </div>
+                    )
+                  )}
+
+                  <div className="bg-gradient-to-r from-orange-400 to-pink-400 rounded-3xl p-5 text-white">
+                    <div className="text-sm uppercase tracking-wide opacity-80">
+                      Recommendation
+                    </div>
+
+                    <div className="text-2xl font-bold mt-1">
+                      UOB FD — 6M @ 3.3%
+                    </div>
+
+                    <div className="mt-2 text-sm text-orange-50">
+                      Highest guaranteed short-term return among major Singapore banks currently tracked.
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {tab ===
+                "spending" && (
+                <>
+                  <div className="bg-white rounded-3xl p-5 shadow-sm">
+                    <div className="font-semibold mb-4">
+                      Category Spending
+                    </div>
+
+                    <div className="h-72">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          data={
+                            pieData
+                          }
+                        >
+                          <XAxis
+                            dataKey="name"
+                          />
+
+                          <Tooltip />
+
+                          <Bar
+                            dataKey="value"
+                            radius={[
+                              10,
+                              10,
+                              0,
+                              0,
+                            ]}
+                          />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    {data.household.expenses.map(
+                      (
+                        expense,
+                        idx
+                      ) => (
+                        <div
+                          key={
+                            idx
+                          }
+                          className="bg-white rounded-2xl p-4 flex justify-between shadow-sm"
+                        >
+                          <div>
+                            <div className="font-semibold">
+                              {
+                                expense.category
+                              }
+                            </div>
+
+                            <div className="text-sm text-neutral-500">
+                              {
+                                expense.merchant
+                              }
+                            </div>
+                          </div>
+
+                          <div className="font-bold">
+                            {currency(
+                              expense.amount
+                            )}
+                          </div>
+                        </div>
+                      )
+                    )}
+                  </div>
+                </>
+              )}
+
+              {tab ===
+                "goals" && (
+                <>
+                  <HeroCard
+                    title={`${progress.toFixed(
+                      0
+                    )}%`}
+                    subtitle="Towards financial freedom"
+                  />
+
+                  <div className="bg-white rounded-3xl p-5 shadow-sm">
+                    <div className="flex justify-between mb-2">
+                      <div className="text-sm text-neutral-500">
+                        Progress
+                      </div>
+
+                      <div className="font-semibold">
+                        {currency(
+                          data
+                            .retirement
+                            .netWorth
+                        )}{" "}
+                        /{" "}
+                        {currency(
+                          targetNestEgg
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="h-4 bg-neutral-100 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-orange-400 to-pink-400"
+                        style={{
+                          width: `${Math.min(
+                            progress,
+                            100
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="bg-white rounded-3xl p-5 shadow-sm">
+                    <div className="font-semibold mb-4">
+                      Net Worth Projection
+                    </div>
+
+                    <div className="h-64">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart
+                          data={[
+                            {
+                              month:
+                                "Now",
+                              value:
+                                data
+                                  .retirement
+                                  .netWorth,
+                            },
+                            {
+                              month:
+                                "1Y",
+                              value:
+                                data
+                                  .retirement
+                                  .netWorth +
+                                cashFlow *
+                                  12,
+                            },
+                            {
+                              month:
+                                "3Y",
+                              value:
+                                data
+                                  .retirement
+                                  .netWorth +
+                                cashFlow *
+                                  36,
+                            },
+                          ]}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" />
+
+                          <XAxis dataKey="month" />
+
+                          <Tooltip />
+
+                          <Line
+                            type="monotone"
+                            dataKey="value"
+                            stroke="#FB923C"
+                            strokeWidth={3}
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <WhatIfCard text="Spend $500 less per month" />
+                    <WhatIfCard text="10% salary increment" />
+                    <WhatIfCard text="Extra $200/month interest" />
+                  </div>
+                </>
+              )}
+
+              {tab ===
+                "reminders" && (
+                <>
+                  <ReminderCard
+                    title="Husband's Parents"
+                    amount={currency(
+                      data
+                        .reminders
+                        .husbandParents
+                    )}
+                  />
+
+                  <ReminderCard
+                    title="My Parents"
+                    amount={currency(
+                      data
+                        .reminders
+                        .myParents
+                    )}
+                  />
+
+                  <ReminderCard
+                    title="Joint Account"
+                    amount={currency(
+                      data
+                        .reminders
+                        .jointTransfer
+                    )}
+                  />
+
+                  {data.investments.map(
+                    (
+                      inv,
+                      idx
+                    ) => (
+                      <ReminderCard
+                        key={
+                          idx
+                        }
+                        title={`${inv.institution} FD`}
+                        amount={`Matures in ${daysTo(
+                          inv.maturityDate
+                        )} days`}
+                      />
+                    )
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* CHAT */}
+            <div className="fixed bottom-16 left-0 right-0 flex justify-center">
+              <div className="w-full max-w-[430px] px-3">
+                <div className="bg-white border border-neutral-200 rounded-3xl shadow-2xl overflow-hidden">
+
+                  <div className="max-h-56 overflow-y-auto p-4 space-y-3">
+                    {data.messages.map(
+                      (
+                        msg,
+                        idx
+                      ) => (
+                        <div
+                          key={
+                            idx
+                          }
+                          className={`flex ${
+                            msg.role ===
+                            "user"
+                              ? "justify-end"
+                              : "justify-start"
+                          }`}
+                        >
+                          <div
+                            className={`max-w-[82%] rounded-3xl px-4 py-3 text-sm leading-relaxed ${
+                              msg.role ===
+                              "user"
+                                ? "bg-orange-500 text-white"
+                                : "bg-neutral-100 text-neutral-800"
+                            }`}
+                          >
+                            {
+                              msg.content
+                            }
+                          </div>
+                        </div>
+                      )
+                    )}
+
+                    <div
+                      ref={
+                        chatEndRef
+                      }
+                    />
+                  </div>
+
+                  {pending && (
+                    <div className="px-4 pb-2">
+                      <button
+                        onClick={
+                          confirmPending
+                        }
+                        className="w-full bg-emerald-500 text-white rounded-2xl py-3 font-semibold"
+                      >
+                        Confirm & Save
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="border-t border-neutral-100 p-3 flex items-center gap-2">
+
+                    <button
+                      onClick={
+                        startVoice
+                      }
+                      className={`w-11 h-11 rounded-2xl flex items-center justify-center ${
+                        listening
+                          ? "bg-red-500 text-white"
+                          : "bg-orange-100 text-orange-700"
+                      }`}
+                    >
+                      🎤
+                    </button>
+
+                    <label className="w-11 h-11 rounded-2xl bg-neutral-100 flex items-center justify-center cursor-pointer">
+                      📷
+                      <input
+                        type="file"
+                        className="hidden"
+                        accept="image/*"
+                        onChange={() =>
+                          addAssistant(
+                            "Statement uploaded ✨ In production, Claude Vision would extract all transactions automatically and present a confirmation screen before saving."
+                          )
+                        }
+                      />
+                    </label>
+
+                    <input
+                      value={input}
+                      onChange={(e) =>
+                        setInput(
+                          e.target
+                            .value
+                        )
+                      }
+                      placeholder="Tell me what happened..."
+                      className="flex-1 bg-neutral-100 rounded-2xl px-4 py-3 outline-none text-sm"
+                    />
+
+                    <button
+                      onClick={() =>
+                        processMessage(
+                          input
+                        )
+                      }
+                      className="w-11 h-11 rounded-2xl bg-orange-500 text-white flex items-center justify-center"
+                    >
+                      ➤
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* NAV */}
+            <div className="fixed bottom-0 left-0 right-0 flex justify-center">
+              <div className="w-full max-w-[430px] bg-white border-t border-neutral-200 px-2 py-2 flex justify-around">
+
+                <NavButton
+                  active={
+                    tab ===
+                    "dashboard"
+                  }
+                  label="Dashboard"
+                  icon="🏠"
+                  onClick={() =>
+                    setTab(
+                      "dashboard"
+                    )
+                  }
+                />
+
+                <NavButton
+                  active={
+                    tab ===
+                    "investments"
+                  }
+                  label="Investments"
+                  icon="💰"
+                  onClick={() =>
+                    setTab(
+                      "investments"
+                    )
+                  }
+                />
+
+                <NavButton
+                  active={
+                    tab ===
+                    "spending"
+                  }
+                  label="Spending"
+                  icon="🛒"
+                  onClick={() =>
+                    setTab(
+                      "spending"
+                    )
+                  }
+                />
+
+                <NavButton
+                  active={
+                    tab ===
+                    "goals"
+                  }
+                  label="Goals"
+                  icon="🎯"
+                  onClick={() =>
+                    setTab(
+                      "goals"
+                    )
+                  }
+                />
+
+                <NavButton
+                  active={
+                    tab ===
+                    "reminders"
+                  }
+                  label="Reminders"
+                  icon="🔔"
+                  onClick={() =>
+                    setTab(
+                      "reminders"
+                    )
+                  }
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function HeroCard({
+      title,
+      subtitle,
+    }) {
+      return (
+        <div className="bg-gradient-to-r from-orange-400 via-pink-400 to-orange-500 rounded-[28px] p-6 text-white shadow-lg">
+          <div className="text-3xl font-bold">
+            {title}
+          </div>
+
+          <div className="mt-2 text-orange-50">
+            {subtitle}
+          </div>
+        </div>
+      );
+    }
+
+    function StatCard({
+      label,
+      value,
+    }) {
+      return (
+        <div className="bg-white rounded-3xl p-5 shadow-sm">
+          <div className="text-sm text-neutral-500">
+            {label}
+          </div>
+
+          <div className="text-xl font-bold mt-2">
+            {value}
+          </div>
+        </div>
+      );
+    }
+
+    function ReminderCard({
+      title,
+      amount,
+    }) {
+      return (
+        <div className="bg-white rounded-3xl p-5 shadow-sm flex justify-between items-center">
+          <div>
+            <div className="font-semibold">
+              {title}
+            </div>
+
+            <div className="text-sm text-neutral-500 mt-1">
+              Reminder
+            </div>
+          </div>
+
+          <div className="font-semibold">
+            {amount}
+          </div>
+        </div>
+      );
+    }
+
+    function WhatIfCard({
+      text,
+    }) {
+      return (
+        <div className="bg-white rounded-3xl p-5 shadow-sm flex justify-between items-center">
+          <div>
+            <div className="font-medium">
+              {text}
+            </div>
+
+            <div className="text-sm text-neutral-500 mt-1">
+              Interactive scenario
+            </div>
+          </div>
+
+          <div className="text-orange-500 text-xl">
+            ↗
+          </div>
+        </div>
+      );
+    }
+
+    function NavButton({
+      icon,
+      label,
+      active,
+      onClick,
+    }) {
+      return (
+        <button
+          onClick={onClick}
+          className={`flex flex-col items-center gap-1 px-3 py-2 rounded-2xl transition ${
+            active
+              ? "text-orange-500"
+              : "text-neutral-400"
+          }`}
+        >
+          <div className="text-lg">
+            {icon}
+          </div>
+
+          <div className="text-[11px] font-medium">
+            {label}
+          </div>
+        </button>
+      );
+    }
+
+    const root =
+      ReactDOM.createRoot(
+        document.getElementById(
+          "root"
+        )
+      );
+
+    root.render(<App />);
+  </script>
+</body>
+</html>
